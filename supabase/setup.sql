@@ -1,6 +1,4 @@
--- Run once in your NEW Supabase project SQL Editor.
--- Contains migrations 001 and 002. No personal emails, passwords or member IDs.
-
+-- NEW PROJECT ONLY.
 begin;
 
 create table public.members (
@@ -183,4 +181,68 @@ insert into public.places(id,slug,city_id,category,name,neighbourhood,descriptio
 ('15d3b06f-ed11-5dec-8281-fab4d24e64c2','urbanista','beirut','coffee','Urbanista','Gemmayzeh','Coffee, food and seating for reading or working.','https://www.google.com/maps/search/?api=1&query=Urbanista%20Gemmayzeh%20Beirut%20Lebanon',null,'https://theculturetrip.com/middle-east/lebanon/articles/the-6-coolest-cafes-in-beirut','Culture Trip',null,'https://waradana.com/english/article/268795-discover-tranquil-cafes-in-gemmayzeh-beirut','August 2026 reporting identifies Gemmayzeh branch as operating; current listing corroborates.','2026-10-16',null,'2026-10-16T00:00:00Z'),
 ('6e419cae-6ad2-50aa-8f3c-335475d21d91','demo','beirut','coffee','Demo','Gemmayzeh','A small bar with music and drinks. Originally listed for daytime coffee; current listings describe evening service.','https://www.google.com/maps/search/?api=1&query=Demo%20Gemmayzeh%20Beirut%20Lebanon',null,'https://theculturetrip.com/middle-east/lebanon/articles/the-6-coolest-cafes-in-beirut','Culture Trip',null,'https://waradana.com/english/article/270710-top-nightlife-spots-on-gemmayze-street','September 2026 nightlife reporting and BAM list the venue as operating. Daytime coffee is not verified.','2026-10-16',null,'2026-10-16T00:00:00Z')
 on conflict(id) do nothing;
+commit;
+
+begin;
+-- Both members can maintain shared café facts, including seeded cafés.
+drop policy place_edit on public.places;
+create policy place_edit on public.places for update to authenticated
+using ((select public.is_member())) with check ((select public.is_member()));
+-- Preserve old observation text while removing its retired label.
+alter table public.observations drop constraint observations_category_check;
+update public.observations set category='observation' where category='cool';
+alter table public.observations add constraint observations_category_check check(category in ('observation','edgy','dangerous','unnecessary'));
+
+create table public.place_photos (
+ id uuid primary key default gen_random_uuid(),
+ place_id uuid not null references public.places(id) on delete restrict,
+ author_id uuid not null references auth.users(id),
+ storage_path text not null unique,
+ created_at timestamptz not null default now(),
+ check (split_part(storage_path,'/',1)=author_id::text and split_part(storage_path,'/',2)=place_id::text and storage_path ~ '^[^/]+/[^/]+/[a-zA-Z0-9-]+\.(jpg|png|webp)$')
+);
+create index place_photos_place on public.place_photos(place_id);
+alter table public.place_photos enable row level security;
+revoke all on public.place_photos from public,anon,authenticated;
+grant select,insert,delete on public.place_photos to authenticated;
+create policy photo_read on public.place_photos for select to authenticated using ((select public.is_member()));
+create policy photo_add on public.place_photos for insert to authenticated with check (
+ (select public.is_member()) and author_id=(select auth.uid()) and exists (
+ select 1 from storage.objects o where o.bucket_id='guide-photos' and o.name=storage_path
+ ));
+create policy photo_delete on public.place_photos for delete to authenticated using ((select public.is_member()) and author_id=(select auth.uid()));
+
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
+values('guide-photos','guide-photos',false,6291456,array['image/jpeg','image/png','image/webp'])
+on conflict(id) do update set public=false,file_size_limit=6291456,allowed_mime_types=excluded.allowed_mime_types;
+create policy guide_photo_read on storage.objects for select to authenticated
+using (bucket_id='guide-photos' and (select public.is_member()));
+create policy guide_photo_upload on storage.objects for insert to authenticated
+with check (bucket_id='guide-photos' and (select public.is_member())
+ and split_part(name,'/',1)=(select auth.uid())::text
+ and exists(select 1 from public.places where id::text=split_part(storage.objects.name,'/',2))
+ and name ~ '^[^/]+/[^/]+/[a-zA-Z0-9-]+\.(jpg|png|webp)$');
+create policy guide_photo_delete on storage.objects for delete to authenticated
+using (bucket_id='guide-photos' and (select public.is_member()) and split_part(name,'/',1)=(select auth.uid())::text);
+-- No UPDATE policy: uploads use unique paths and cannot overwrite another photo.
+commit;
+
+-- Only fill missing editorial images; preserve member edits and uploads.
+begin;
+update public.places set image_url='https://cdn.n-idea.net/eyJidWNrZXQiOiJiYW1sZWIiLCJrZXkiOiIwNWRhYTBkYjU2MTIxNjlmLTM3YzI2MzgzZDhjNmFmOWEtMTE5MjMwNjMwXzk0NDEwOTc4OTQyMDg3MF83MDA0NzYxNTkyNDk3MjMwNTAwX24uanBlZyIsImVkaXRzIjp7IndlYnAiOnRydWUsImpwZWciOnRydWUsInNoYXJwZW4iOnRydWUsInJlc2l6ZSI6eyJ3aWR0aCI6NTAwLCJoZWlnaHQiOjUwMH19fQ==',image_credit='Photo via bam.agendaculturel.com' where id='9968104a-87cf-5f14-a8ce-ec7cba779cf7' and image_url is null;
+update public.places set image_url='https://itin-dev.wanderlogstatic.com/freeImageSmall/ZrlwDFfxbMnRIBHrxePOGy8p4XPXwnSG',image_credit='Photo via wanderlog.com' where id='b0611da1-5ac2-540a-8ce2-05056e64512b' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/04/62947-1.png',image_credit='Photo via www.beirut.com' where id='a10df1e6-ed91-59e0-b1ae-f410030a7bdf' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/02/59475.png',image_credit='Photo via www.beirut.com' where id='b3bd7886-7d28-583b-967a-abefe1e9cc63' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/04/63590-3.png',image_credit='Photo via www.beirut.com' where id='52d2771d-882a-51ba-8246-db830085804a' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/03/50157.png',image_credit='Photo via www.beirut.com' where id='ed308526-81df-512a-a224-097dc82fda2e' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/03/46735-6.png',image_credit='Photo via www.beirut.com' where id='5d4bea79-2189-502d-bbde-5e1c7c57694c' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/03/6182-3.png',image_credit='Photo via www.beirut.com' where id='b5d73a43-1d8e-5131-ad7a-db9439105383' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/03/16747-20.png',image_credit='Photo via www.beirut.com' where id='15d3b06f-ed11-5dec-8281-fab4d24e64c2' and image_url is null;
+update public.places set image_url='https://www.beirut.com/wp-content/uploads/2023/03/640-2.png',image_credit='Photo via www.beirut.com' where id='6e419cae-6ad2-50aa-8f3c-335475d21d91' and image_url is null;
+insert into public.places(id,slug,city_id,category,name,neighbourhood,description,maps_url,image_url,source_url,source_name,image_credit,verification_url,verification_note,checked_at,added_by,created_at) values ('a3fcab7f-2cc4-5f20-af3f-edb86c97d442','oak-coffee-shop','beirut','coffee','Oak Coffee Shop','Forn el Chebbak','Coffee and sweet bites by Abraj Center.','https://www.google.com/maps/search/?api=1&query=Oak+Coffee+Shop+Abraj+Furn+El+Chebbak+Lebanon','https://lebanonspotlights.com/wp-content/uploads/2026/01/Oak-Coffee-Shop-Abraj.jpeg','https://lebanonspotlights.com/restaurants/oak-coffee-shop-abraj/','Lebanon Spotlights','Photo via Lebanon Spotlights','https://wenrayhin.com/en/places/oak-coffee-shop-forn-el-chebbak','Current listing marks the Abraj Center café as open; corroborated by WorldCafeMap and Lebanon Spotlights.','2026-10-17',null,'2026-10-17T00:00:00Z') on conflict do nothing;
+commit;
+
+-- Replace directory logo with a venue photograph; leave custom images alone.
+begin;
+update public.places set image_url='https://images.mindtrip.ai/restaurants/8bca/98f5/eda7/4ae9/ea1d/533a/2dd6/75ff', image_credit='Photo via Mindtrip' where slug='riwaq' and (image_url is null or image_url='https://www.beirut.com/wp-content/uploads/2023/03/50157.png');
 commit;
